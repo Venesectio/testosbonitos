@@ -1,0 +1,423 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Сапёр</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  :root {
+    --bg: var(--tg-theme-bg-color, #17212b);
+    --text: var(--tg-theme-text-color, #ffffff);
+    --hint: var(--tg-theme-hint-color, #708499);
+    --button: var(--tg-theme-button-color, #5288c1);
+    --button-text: var(--tg-theme-button-text-color, #ffffff);
+    --cell-closed: #3a4a5c;
+    --cell-open: #24303f;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 12px 8px 24px;
+    user-select: none;
+  }
+  h1 { font-size: 20px; margin: 8px 0 4px; }
+  .panel {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    width: 100%;
+    max-width: 380px;
+    margin-bottom: 10px;
+    font-size: 16px;
+  }
+  .panel .stat {
+    background: var(--cell-open);
+    padding: 6px 14px;
+    border-radius: 10px;
+    min-width: 60px;
+    text-align: center;
+    font-weight: 600;
+  }
+  .difficulty {
+    display: flex;
+    gap: 6px;
+    margin-bottom: 10px;
+  }
+  .difficulty button {
+    background: var(--cell-open);
+    color: var(--text);
+    border: none;
+    padding: 6px 10px;
+    border-radius: 8px;
+    font-size: 13px;
+  }
+  .difficulty button.active {
+    background: var(--button);
+    color: var(--button-text);
+  }
+  #board {
+    display: grid;
+    gap: 3px;
+    touch-action: none;
+  }
+  .cell {
+    width: 32px;
+    height: 32px;
+    background: var(--cell-closed);
+    border-radius: 6px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 15px;
+    font-weight: 700;
+    color: var(--text);
+    position: relative;
+  }
+  .cell.open {
+    background: var(--cell-open);
+  }
+  .cell.mine {
+    background: #c94b4b;
+  }
+  .cell.flag::after {
+    content: "🚩";
+    font-size: 14px;
+  }
+  .cell[data-n="1"] { color: #6fa8ff; }
+  .cell[data-n="2"] { color: #6fcf7a; }
+  .cell[data-n="3"] { color: #ff6f6f; }
+  .cell[data-n="4"] { color: #b46fff; }
+  .cell[data-n="5"] { color: #ffb46f; }
+  .cell[data-n="6"] { color: #6ffff0; }
+  .cell[data-n="7"] { color: #ffffff; }
+  .cell[data-n="8"] { color: var(--hint); }
+  #status {
+    margin-top: 14px;
+    font-size: 16px;
+    min-height: 22px;
+    font-weight: 600;
+  }
+  #restart {
+    margin-top: 6px;
+    background: var(--button);
+    color: var(--button-text);
+    border: none;
+    padding: 10px 22px;
+    border-radius: 10px;
+    font-size: 15px;
+  }
+  .hint {
+    color: var(--hint);
+    font-size: 12px;
+    margin-top: 10px;
+    text-align: center;
+  }
+</style>
+</head>
+<body>
+  <h1>💣 Сапёр</h1>
+
+  <div class="difficulty">
+    <button data-level="easy" class="active">Лёгко 9×9</button>
+    <button data-level="medium">Средне 12×12</button>
+    <button data-level="hard">Сложно 14×16</button>
+  </div>
+
+  <div class="panel">
+    <div class="stat">🚩 <span id="mines-left">10</span></div>
+    <div class="stat">⏱ <span id="timer">0</span></div>
+  </div>
+
+  <div id="board"></div>
+
+  <div id="status"></div>
+  <button id="restart">Новая игра</button>
+  <div class="hint">Тап — открыть клетку. Долгое нажатие — поставить флаг.</div>
+
+<script>
+  const tg = window.Telegram?.WebApp;
+  if (tg) {
+    tg.ready();
+    tg.expand();
+  }
+
+  const LEVELS = {
+    easy:   { rows: 9,  cols: 9,  mines: 10 },
+    medium: { rows: 12, cols: 12, mines: 24 },
+    hard:   { rows: 16, cols: 14, mines: 40 },
+  };
+
+  let rows, cols, minesCount;
+  let board = [];
+  let opened = 0;
+  let flagsPlaced = 0;
+  let gameOver = false;
+  let firstClick = true;
+  let timer = 0;
+  let timerInterval = null;
+
+  const boardEl = document.getElementById('board');
+  const minesLeftEl = document.getElementById('mines-left');
+  const timerEl = document.getElementById('timer');
+  const statusEl = document.getElementById('status');
+  const restartBtn = document.getElementById('restart');
+  const difficultyBtns = document.querySelectorAll('.difficulty button');
+
+  function vibrate(style) {
+    if (tg?.HapticFeedback) {
+      if (style === 'error') tg.HapticFeedback.notificationOccurred('error');
+      else if (style === 'success') tg.HapticFeedback.notificationOccurred('success');
+      else tg.HapticFeedback.impactOccurred('light');
+    }
+  }
+
+  function startTimer() {
+    stopTimer();
+    timer = 0;
+    timerEl.textContent = timer;
+    timerInterval = setInterval(() => {
+      timer++;
+      timerEl.textContent = timer;
+    }, 1000);
+  }
+  function stopTimer() {
+    if (timerInterval) clearInterval(timerInterval);
+    timerInterval = null;
+  }
+
+  function createEmptyBoard() {
+    board = [];
+    for (let r = 0; r < rows; r++) {
+      const row = [];
+      for (let c = 0; c < cols; c++) {
+        row.push({ mine: false, open: false, flag: false, adjacent: 0 });
+      }
+      board.push(row);
+    }
+  }
+
+  function placeMines(excludeR, excludeC) {
+    let placed = 0;
+    while (placed < minesCount) {
+      const r = Math.floor(Math.random() * rows);
+      const c = Math.floor(Math.random() * cols);
+      const tooClose = Math.abs(r - excludeR) <= 1 && Math.abs(c - excludeC) <= 1;
+      if (board[r][c].mine || tooClose) continue;
+      board[r][c].mine = true;
+      placed++;
+    }
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        board[r][c].adjacent = countAdjacentMines(r, c);
+      }
+    }
+  }
+
+  function countAdjacentMines(r, c) {
+    let count = 0;
+    for (let dr = -1; dr <= 1; dr++) {
+      for (let dc = -1; dc <= 1; dc++) {
+        if (dr === 0 && dc === 0) continue;
+        const nr = r + dr, nc = c + dc;
+        if (nr >= 0 && nr < rows && nc >= 0 && nc < cols && board[nr][nc].mine) {
+          count++;
+        }
+      }
+    }
+    return count;
+  }
+
+  function renderBoard() {
+    boardEl.innerHTML = '';
+    boardEl.style.gridTemplateColumns = `repeat(${cols}, 32px)`;
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        const cellEl = document.createElement('div');
+        cellEl.className = 'cell';
+        cellEl.dataset.r = r;
+        cellEl.dataset.c = c;
+        attachCellEvents(cellEl, r, c);
+        boardEl.appendChild(cellEl);
+      }
+    }
+  }
+
+  function attachCellEvents(cellEl, r, c) {
+    let pressTimer = null;
+    let longPressed = false;
+
+    const onStart = (e) => {
+      longPressed = false;
+      pressTimer = setTimeout(() => {
+        longPressed = true;
+        toggleFlag(r, c);
+      }, 400);
+    };
+    const onEnd = (e) => {
+      clearTimeout(pressTimer);
+      if (!longPressed) {
+        openCell(r, c);
+      }
+    };
+    const onCancel = () => clearTimeout(pressTimer);
+
+    cellEl.addEventListener('touchstart', onStart, { passive: true });
+    cellEl.addEventListener('touchend', onEnd);
+    cellEl.addEventListener('touchcancel', onCancel);
+    cellEl.addEventListener('mousedown', onStart);
+    cellEl.addEventListener('mouseup', onEnd);
+    cellEl.addEventListener('mouseleave', onCancel);
+    cellEl.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      toggleFlag(r, c);
+    });
+  }
+
+  function getCellEl(r, c) {
+    return boardEl.querySelector(`.cell[data-r="${r}"][data-c="${c}"]`);
+  }
+
+  function toggleFlag(r, c) {
+    if (gameOver) return;
+    const cell = board[r][c];
+    if (cell.open) return;
+    cell.flag = !cell.flag;
+    flagsPlaced += cell.flag ? 1 : -1;
+    minesLeftEl.textContent = minesCount - flagsPlaced;
+    getCellEl(r, c).classList.toggle('flag', cell.flag);
+    vibrate('light');
+  }
+
+  function openCell(r, c) {
+    if (gameOver) return;
+    const cell = board[r][c];
+    if (cell.open || cell.flag) return;
+
+    if (firstClick) {
+      placeMines(r, c);
+      firstClick = false;
+      startTimer();
+    }
+
+    if (cell.mine) {
+      revealAllMines(r, c);
+      endGame(false);
+      return;
+    }
+
+    floodOpen(r, c);
+    checkWin();
+  }
+
+  function floodOpen(r, c) {
+    const stack = [[r, c]];
+    while (stack.length) {
+      const [cr, cc] = stack.pop();
+      const cell = board[cr][cc];
+      if (cell.open || cell.flag) continue;
+      cell.open = true;
+      opened++;
+      const el = getCellEl(cr, cc);
+      el.classList.add('open');
+      if (cell.adjacent > 0) {
+        el.textContent = cell.adjacent;
+        el.dataset.n = cell.adjacent;
+      } else {
+        for (let dr = -1; dr <= 1; dr++) {
+          for (let dc = -1; dc <= 1; dc++) {
+            if (dr === 0 && dc === 0) continue;
+            const nr = cr + dr, nc = cc + dc;
+            if (nr >= 0 && nr < rows && nc >= 0 && nc < cols && !board[nr][nc].open) {
+              stack.push([nr, nc]);
+            }
+          }
+        }
+      }
+    }
+  }
+
+  function revealAllMines(hitR, hitC) {
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        if (board[r][c].mine) {
+          const el = getCellEl(r, c);
+          el.classList.add('open', 'mine');
+          el.textContent = '💣';
+        }
+      }
+    }
+    const hitEl = getCellEl(hitR, hitC);
+    hitEl.style.background = '#8f1f1f';
+  }
+
+  function checkWin() {
+    if (opened === rows * cols - minesCount) {
+      endGame(true);
+    }
+  }
+
+  function endGame(won) {
+    gameOver = true;
+    stopTimer();
+    if (won) {
+      statusEl.textContent = `🎉 Победа! Время: ${timer} сек.`;
+      vibrate('success');
+      tg?.HapticFeedback?.notificationOccurred('success');
+    } else {
+      statusEl.textContent = '💥 Взрыв! Попробуй снова.';
+      vibrate('error');
+    }
+    if (tg) {
+      try {
+        tg.sendData(JSON.stringify({
+          event: 'game_finished',
+          won,
+          time: timer,
+          level: currentLevel,
+        }));
+      } catch (e) { /* sendData доступен только если бот открыл через keyboard-кнопку */ }
+    }
+  }
+
+  let currentLevel = 'easy';
+
+  function newGame(level) {
+    currentLevel = level;
+    const cfg = LEVELS[level];
+    rows = cfg.rows;
+    cols = cfg.cols;
+    minesCount = cfg.mines;
+    opened = 0;
+    flagsPlaced = 0;
+    gameOver = false;
+    firstClick = true;
+    stopTimer();
+    timer = 0;
+    timerEl.textContent = 0;
+    minesLeftEl.textContent = minesCount;
+    statusEl.textContent = '';
+    createEmptyBoard();
+    renderBoard();
+  }
+
+  restartBtn.addEventListener('click', () => newGame(currentLevel));
+
+  difficultyBtns.forEach(btn => {
+    btn.addEventListener('click', () => {
+      difficultyBtns.forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      newGame(btn.dataset.level);
+    });
+  });
+
+  newGame('easy');
+</script>
+</body>
+</html>
